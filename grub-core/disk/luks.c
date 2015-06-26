@@ -30,8 +30,6 @@
 
 GRUB_MOD_LICENSE ("GPLv3+");
 
-#define MAX_PASSPHRASE 256
-
 #define LUKS_KEY_ENABLED  0x00AC71F3
 
 /* On disk LUKS header */
@@ -112,7 +110,7 @@ configure_ciphers (grub_disk_t disk, const char *check_uuid,
        iptr++)
     {
       if (*iptr != '-')
-	*optr++ = *iptr;
+        *optr++ = *iptr;
     }
   *optr = 0;
 
@@ -122,6 +120,7 @@ configure_ciphers (grub_disk_t disk, const char *check_uuid,
       return NULL;
     }
 
+
   /* Make sure that strings are null terminated.  */
   grub_memcpy (ciphername, header.cipherName, sizeof (header.cipherName));
   ciphername[sizeof (header.cipherName)] = 0;
@@ -130,34 +129,10 @@ configure_ciphers (grub_disk_t disk, const char *check_uuid,
   grub_memcpy (hashspec, header.hashSpec, sizeof (header.hashSpec));
   hashspec[sizeof (header.hashSpec)] = 0;
 
-  newdev = grub_zalloc (sizeof (struct grub_cryptodisk));
-  if (!newdev)
-      return NULL;
+  newdev = grub_cryptodisk_create (disk, uuid, ciphername, ciphermode, hashspec);
+
   newdev->offset = grub_be_to_cpu32 (header.payloadOffset);
-  newdev->source_disk = NULL;
-  newdev->log_sector_size = 9;
-  newdev->total_length = grub_disk_get_size (disk) - newdev->offset;
-  grub_memcpy (newdev->uuid, uuid, sizeof (uuid));
   newdev->modname = "luks";
-
-  /* Configure the hash used for the AF splitter and HMAC.  */
-  newdev->hash = grub_crypto_lookup_md_by_name (hashspec);
-  if (!newdev->hash)
-    {
-      grub_free (newdev);
-      grub_error (GRUB_ERR_FILE_NOT_FOUND, "Couldn't load %s hash",
-		  hashspec);
-      return NULL;
-    }
-
-  err = grub_cryptodisk_setcipher (newdev, ciphername, ciphermode);
-  if (err)
-    {
-      grub_free (newdev);
-      return NULL;
-    }
-
-  COMPILE_TIME_ASSERT (sizeof (newdev->uuid) >= sizeof (uuid));
 
   return newdev;
 }
@@ -172,7 +147,7 @@ luks_recover_key (grub_disk_t source,
   struct grub_luks_phdr header;
   grub_size_t keysize;
   grub_uint8_t *split_key = NULL;
-  char interactive_passphrase[MAX_PASSPHRASE] = "";
+  char interactive_passphrase[GRUB_CRYPTODISK_MAX_PASSPHRASE] = "";
   grub_uint8_t *passphrase;
   grub_size_t passphrase_length;
   grub_uint8_t candidate_digest[sizeof (header.mkDigest)];
@@ -219,7 +194,7 @@ luks_recover_key (grub_disk_t source,
           /* Use bytestring from key file as passphrase */
           passphrase = keyfile_bytes;
           passphrase_length = keyfile_bytes_size;
-	  keyfile_bytes = NULL; /* use it only once */
+          keyfile_bytes = NULL; /* use it only once */
         }
       else
         {
@@ -230,7 +205,7 @@ luks_recover_key (grub_disk_t source,
           grub_printf_ (N_("Enter passphrase for %s%s%s (%s): "), source->name,
                               source->partition ? "," : "", tmp ? : "", dev->uuid);
           grub_free (tmp);
-          if (!grub_password_get (interactive_passphrase, MAX_PASSPHRASE))
+          if (!grub_password_get (interactive_passphrase, GRUB_CRYPTODISK_MAX_PASSPHRASE))
             {
               grub_free (split_key);
               return grub_error (GRUB_ERR_BAD_ARGUMENT, "Passphrase not supplied");
