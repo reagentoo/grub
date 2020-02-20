@@ -40,6 +40,7 @@ GRUB_MOD_LICENSE ("GPLv3+");
 enum grub_luks2_kdf_type
 {
   LUKS2_KDF_TYPE_ARGON2I,
+  LUKS2_KDF_TYPE_ARGON2ID,
   LUKS2_KDF_TYPE_PBKDF2
 };
 typedef enum grub_luks2_kdf_type grub_luks2_kdf_type_t;
@@ -90,7 +91,7 @@ struct grub_luks2_keyslot
 	grub_int64_t time;
 	grub_int64_t memory;
 	grub_int64_t cpus;
-      } argon2i;
+      } argon2;
       struct
       {
 	const char   *hash;
@@ -158,10 +159,11 @@ luks2_parse_keyslot (grub_luks2_keyslot_t *out, const grub_json_t *keyslot)
     return grub_error (GRUB_ERR_BAD_ARGUMENT, "Missing or invalid KDF");
   else if (!grub_strcmp (type, "argon2i") || !grub_strcmp (type, "argon2id"))
     {
-      out->kdf.type = LUKS2_KDF_TYPE_ARGON2I;
-      if (grub_json_getint64 (&out->kdf.u.argon2i.time, &kdf, "time") ||
-	  grub_json_getint64 (&out->kdf.u.argon2i.memory, &kdf, "memory") ||
-	  grub_json_getint64 (&out->kdf.u.argon2i.cpus, &kdf, "cpus"))
+      out->kdf.type = !grub_strcmp (type, "argon2i")
+                     ? LUKS2_KDF_TYPE_ARGON2I : LUKS2_KDF_TYPE_ARGON2ID;
+      if (grub_json_getint64 (&out->kdf.u.argon2.time, &kdf, "time") ||
+         grub_json_getint64 (&out->kdf.u.argon2.memory, &kdf, "memory") ||
+         grub_json_getint64 (&out->kdf.u.argon2.cpus, &kdf, "cpus"))
 	return grub_error (GRUB_ERR_BAD_ARGUMENT, "Missing Argon2i parameters");
     }
   else if (!grub_strcmp (type, "pbkdf2"))
@@ -439,6 +441,7 @@ luks2_decrypt_key (grub_uint8_t *out_key,
   switch (k->kdf.type)
     {
       case LUKS2_KDF_TYPE_ARGON2I:
+      case LUKS2_KDF_TYPE_ARGON2ID:
 	ret = grub_error (GRUB_ERR_BAD_ARGUMENT, "Argon2 not supported");
 	goto err;
       case LUKS2_KDF_TYPE_PBKDF2:
