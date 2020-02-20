@@ -1182,6 +1182,14 @@ module = {
 };
 
 module = {
+  name = argon2;
+  common = lib/argon2/argon2.c;
+  common = lib/argon2/core.c;
+  common = lib/argon2/ref.c;
+  common = lib/argon2/blake2/blake2b.c;
+};
+
+module = {
   name = afsplitter;
   common = disk/AFSplitter.c;
 };

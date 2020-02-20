@@ -489,10 +489,74 @@ GRUB includes some code from other projects, and it is sometimes necessary
 to update it.
 
 @menu
+* Argon2::
 * Gnulib::
 * jsmn::
 * minilzo::
 @end menu
+
+@node Argon2
+@section Argon2
+
+Argon2 is a key derivation function used by LUKS2 in order to derive encryption
+keys from a user-provided password. GRUB imports the official reference
+implementation of Argon2 from @url{https://github.com/P-H-C/phc-winner-argon2}.
+In order to make the library usable for GRUB, we need to perform various
+conversions. This is mainly due to the fact that the imported code makes use of
+types and functions defined in the C standard library, which isn't available.
+Furthermore, using the POSIX wrapper library is not possible as the code needs
+to be part of the kernel.
+
+Updating the code can thus be performed like following:
+
+@example
+$ git clone https://github.com/P-H-C/phc-winner-argon2 argon2
+$ cp argon2/include/argon2.h argon2/src/@{argon2.c,core.c,core.h,ref.c@} \
+    grub-core/lib/argon2/
+$ cp argon2/src/blake2/@{blake2-impl.h,blake2.h,blake2b.c,blamka-round-ref.h@} \
+    grub-core/lib/argon2/blake2/
+$ sed -e 's/UINT32_C/GRUB_UINT32_C/g' \
+      -e 's/UINT64_C/GRUB_UINT64_C/g' \
+      -e 's/UINT32_MAX/GRUB_UINT32_MAX/g' \
+      -e 's/CHAR_BIT/GRUB_CHAR_BIT/g' \
+      -e 's/UINT_MAX/GRUB_UINT_MAX/g' \
+      -e 's/uintptr_t/grub_addr_t/g' \
+      -e 's/size_t/grub_size_t/g' \
+      -e 's/uint32_t/grub_uint32_t/g' \
+      -e 's/uint64_t/grub_uint64_t/g' \
+      -e 's/uint8_t/grub_uint8_t/g' \
+      -e 's/memset/grub_memset/g' \
+      -e 's/memcpy/grub_memcpy/g' \
+      -e 's/malloc/grub_malloc/g' \
+      -e 's/free/grub_free/g' \
+      -e 's/#elif _MSC_VER/#elif defined(_MSC_VER)/' \
+      grub-core/lib/argon2/@{*,blake2/*@}.@{c,h@} -i
+@end example
+
+Afterwards, you need to perform the following manual steps:
+
+@enumerate
+@item Remove all includes of standard library headers, "encoding.h" and
+      "thread.h".
+@item Add includes <grub/mm.h> and <grub/misc.h> to "argon2.h".
+@item Add include <grub/dl.h> and module license declaration to "argon2.c".
+@item Remove the following declarations and functions from "argon2.h" and
+     "argon2.c": argon2_type2string, argon2i_hash_encoded, argon2i_hash_raw,
+     argon2d_hash_encoded, argon2d_hash_raw, argon2id_hash_encoded,
+     argon2id_hash_raw, argon2_compare, argon2_verify, argon2i_verify,
+     argon2d_verify, argon2id_verify, argon2d_ctx, argon2i_ctx, argon2id_ctx,
+     argon2_verify_ctx, argon2d_verify_ctx, argon2i_verify_ctx,
+     argon2id_verify_ctx, argon2_encodedlen.
+@item Move the declaration of `clear_internal_memory()` in "blake2-impl.h" to
+      "blake2b.c".
+@item Remove code guarded by the ARGON2_NO_THREADS macro.
+@item Remove parameters `encoded` and `encodedlen` from `argon2_hash` and remove
+      the encoding block in that function.
+@item Remove parameter verifications in `validate_inputs()` for
+      ARGON2_MIN_PWD_LENGTH, ARGON2_MIN_SECRET, ARGON2_MIN_AD_LENGTH and
+      ARGON2_MAX_MEMORY to fix compiler warnings.
+@item Mark the function argon2_ctx as static.
+@end enumerate
 
 @node Gnulib
 @section Gnulib
