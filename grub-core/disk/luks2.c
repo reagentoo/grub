@@ -27,6 +27,7 @@
 #include <grub/partition.h>
 #include <grub/i18n.h>
 
+#include <argon2.h>
 #include <base64.h>
 #include <json.h>
 
@@ -442,8 +443,16 @@ luks2_decrypt_key (grub_uint8_t *out_key,
     {
       case LUKS2_KDF_TYPE_ARGON2I:
       case LUKS2_KDF_TYPE_ARGON2ID:
-	ret = grub_error (GRUB_ERR_BAD_ARGUMENT, "Argon2 not supported");
-	goto err;
+	ret = argon2_hash (k->kdf.u.argon2.time, k->kdf.u.argon2.memory, k->kdf.u.argon2.cpus,
+			   passphrase, passphraselen, salt, saltlen, area_key, k->area.key_size,
+			   k->kdf.type == LUKS2_KDF_TYPE_ARGON2I ? Argon2_i : Argon2_id,
+			   ARGON2_VERSION_NUMBER);
+	if (ret)
+	  {
+	    grub_dprintf ("luks2", "Argon2 failed: %s\n", argon2_error_message (ret));
+	    goto err;
+	  }
+	break;
       case LUKS2_KDF_TYPE_PBKDF2:
 	hash = grub_crypto_lookup_md_by_name (k->kdf.u.pbkdf2.hash);
 	if (!hash)
