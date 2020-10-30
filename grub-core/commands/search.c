@@ -30,6 +30,8 @@
 #include <grub/i18n.h>
 #include <grub/disk.h>
 #include <grub/partition.h>
+#include <grub/gpt_partition.h>
+#include <grub/i386/pc/boot.h>
 
 GRUB_MOD_LICENSE ("GPLv3+");
 
@@ -66,13 +68,13 @@ iterate_device (const char *name, void *data)
       name[0] == 'f' && name[1] == 'd' && name[2] >= '0' && name[2] <= '9')
     return 1;
 
-#ifdef DO_SEARCH_FS_UUID
+#if defined (DO_SEARCH_FS_UUID) || defined (DO_SEARCH_PART_UUID)
 #define compare_fn grub_strcasecmp
 #else
 #define compare_fn grub_strcmp
 #endif
 
-#ifdef DO_SEARCH_FILE
+#if defined (DO_SEARCH_FILE)
     {
       char *buf;
       grub_file_t file;
@@ -89,6 +91,57 @@ iterate_device (const char *name, void *data)
 	  grub_file_close (file);
 	}
       grub_free (buf);
+    }
+#elif defined (DO_SEARCH_PART_UUID)
+    {
+      grub_device_t dev;
+
+      /* AAAABBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF + null terminator */
+      char val[37] = "none";
+
+      dev = grub_device_open (name);
+      if (dev && dev->disk && dev->disk->partition)
+	{
+	  struct grub_partition *p = dev->disk->partition;
+	  grub_disk_t disk = grub_disk_open(dev->disk->name);
+
+	  if (!disk)
+	    return 1;
+	  if (grub_strcmp(dev->disk->partition->partmap->name, "gpt") == 0)
+	    {
+	      struct grub_gpt_partentry entry;
+	      grub_gpt_part_guid_t *guid;
+
+	      if (grub_disk_read(disk, p->offset, p->index, sizeof(entry), &entry))
+		return 1;
+	      guid = &entry.guid;
+	      grub_snprintf (val, sizeof(val),
+			     "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+			     grub_le_to_cpu32 (guid->data1),
+			     grub_le_to_cpu16 (guid->data2),
+			     grub_le_to_cpu16 (guid->data3),
+			     guid->data4[0], guid->data4[1], guid->data4[2],
+			     guid->data4[3], guid->data4[4], guid->data4[5],
+			     guid->data4[6], guid->data4[7]);
+
+	      if (compare_fn (val, ctx->key) == 0)
+		found = 1;
+	    }
+	  else if (grub_strcmp(dev->disk->partition->partmap->name, "msdos") == 0)
+	    {
+	      grub_uint32_t nt_disk_sig;
+
+	      if (grub_disk_read(disk, 0, GRUB_BOOT_MACHINE_WINDOWS_NT_MAGIC,
+				 sizeof(nt_disk_sig), &nt_disk_sig) == 0)
+		grub_snprintf (val, sizeof(val), "%08x-%02x",
+			       grub_le_to_cpu32(nt_disk_sig), 1 + p->number);
+
+	      if (compare_fn (val, ctx->key) == 0)
+		found = 1;
+	    }
+	  grub_disk_close(disk);
+	  grub_device_close(dev);
+	}
     }
 #else
     {
@@ -315,6 +368,8 @@ static grub_command_t cmd;
 GRUB_MOD_INIT(search_fs_file)
 #elif defined (DO_SEARCH_FS_UUID)
 GRUB_MOD_INIT(search_fs_uuid)
+#elif defined (DO_SEARCH_PART_UUID)
+GRUB_MOD_INIT(search_part_uuid)
 #else
 GRUB_MOD_INIT(search_label)
 #endif
@@ -329,6 +384,8 @@ GRUB_MOD_INIT(search_label)
 GRUB_MOD_FINI(search_fs_file)
 #elif defined (DO_SEARCH_FS_UUID)
 GRUB_MOD_FINI(search_fs_uuid)
+#elif defined (DO_SEARCH_PART_UUID)
+GRUB_MOD_FINI(search_part_uuid)
 #else
 GRUB_MOD_FINI(search_label)
 #endif

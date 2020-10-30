@@ -1081,6 +1081,11 @@ module = {
 };
 
 module = {
+  name = search_part_uuid;
+  common = commands/search_partuuid.c;
+};
+
+module = {
   name = setpci;
   common = commands/setpci.c;
   enable = pci;
