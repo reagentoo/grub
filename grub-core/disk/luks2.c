@@ -309,13 +309,22 @@ luks2_get_keyslot (grub_luks2_keyslot_t *k, grub_luks2_digest_t *d, grub_luks2_s
 
 /* Determine whether to use primary or secondary header */
 static grub_err_t
-luks2_read_header (grub_disk_t disk, grub_luks2_header_t *outhdr)
+luks2_read_header (grub_disk_t disk, grub_file_t hdr_file, grub_luks2_header_t *outhdr)
 {
   grub_luks2_header_t primary, secondary, *header = &primary;
   grub_err_t ret;
 
   /* Read the primary LUKS header. */
-  ret = grub_disk_read (disk, 0, 0, sizeof (primary), &primary);
+  if (hdr_file)
+    {
+      grub_file_seek (hdr_file, 0);
+      if (grub_file_read (hdr_file, &primary, sizeof (primary)) != sizeof (primary))
+	  ret = GRUB_ERR_READ_ERROR;
+      else
+	  ret = GRUB_ERR_NONE;
+    }
+  else
+      ret = grub_disk_read (disk, 0, 0, sizeof (primary), &primary);
   if (ret)
     return ret;
 
@@ -325,7 +334,16 @@ luks2_read_header (grub_disk_t disk, grub_luks2_header_t *outhdr)
     return GRUB_ERR_BAD_SIGNATURE;
 
   /* Read the secondary header. */
-  ret = grub_disk_read (disk, 0, grub_be_to_cpu64 (primary.hdr_size), sizeof (secondary), &secondary);
+  if (hdr_file)
+    {
+      grub_file_seek (hdr_file, grub_be_to_cpu64 (primary.hdr_size));
+      if (grub_file_read (hdr_file, &secondary, sizeof (secondary)) != sizeof (secondary))
+	  ret = GRUB_ERR_READ_ERROR;
+      else
+	  ret = GRUB_ERR_NONE;
+    }
+  else
+      ret = grub_disk_read (disk, 0, grub_be_to_cpu64 (primary.hdr_size), sizeof (secondary), &secondary);
   if (ret)
     return ret;
 
@@ -342,7 +360,7 @@ luks2_read_header (grub_disk_t disk, grub_luks2_header_t *outhdr)
 }
 
 static grub_cryptodisk_t
-luks2_scan (grub_disk_t disk, const char *check_uuid, int check_boot)
+luks2_scan (grub_disk_t disk, grub_file_t hdr_file, const char *check_uuid, int check_boot)
 {
   grub_cryptodisk_t cryptodisk;
   grub_luks2_header_t header;
@@ -352,7 +370,7 @@ luks2_scan (grub_disk_t disk, const char *check_uuid, int check_boot)
   if (check_boot)
     return NULL;
 
-  if (luks2_read_header (disk, &header))
+  if (luks2_read_header (disk, hdr_file, &header))
     {
       grub_errno = GRUB_ERR_NONE;
       return NULL;
@@ -415,7 +433,7 @@ luks2_verify_key (grub_luks2_digest_t *d, grub_uint8_t *candidate_key,
 
 static grub_err_t
 luks2_decrypt_key (grub_uint8_t *out_key,
-		   grub_disk_t disk, grub_cryptodisk_t crypt,
+		   grub_disk_t disk, grub_cryptodisk_t crypt, grub_file_t hdr_file,
 		   grub_luks2_keyslot_t *k,
 		   const grub_uint8_t *passphrase, grub_size_t passphraselen)
 {
@@ -491,7 +509,16 @@ luks2_decrypt_key (grub_uint8_t *out_key,
     }
 
   grub_errno = GRUB_ERR_NONE;
-  ret = grub_disk_read (disk, 0, k->area.offset, k->area.size, split_key);
+  if (hdr_file)
+    {
+      grub_file_seek (hdr_file, k->area.offset);
+      if (grub_file_read (hdr_file, split_key, k->area.size) != k->area.size)
+	  ret = GRUB_ERR_READ_ERROR;
+      else
+	  ret = GRUB_ERR_NONE;
+    }
+  else
+      ret = grub_disk_read (disk, 0, k->area.offset, k->area.size, split_key);
   if (ret)
     {
       grub_error (GRUB_ERR_IO, "Read error: %s\n", grub_errmsg);
@@ -531,12 +558,16 @@ luks2_decrypt_key (grub_uint8_t *out_key,
 
 static grub_err_t
 luks2_recover_key (grub_disk_t disk,
-		   grub_cryptodisk_t crypt)
+		   grub_cryptodisk_t crypt,
+		   grub_file_t hdr_file, grub_file_t key_file, grub_file_t mkey_file)
 {
+  char cipher[32];
+  char *passphrase = NULL;
   grub_uint8_t candidate_key[GRUB_CRYPTODISK_MAX_KEYLEN];
-  char passphrase[MAX_PASSPHRASE], cipher[32];
+  grub_size_t candidate_key_len, passphrase_len;
   char *json_header = NULL, *part = NULL, *ptr;
-  grub_size_t candidate_key_len = 0, i, size;
+  grub_off_t json_header_offset;
+  grub_size_t json_header_size, i, size;
   grub_luks2_header_t header;
   grub_luks2_keyslot_t keyslot;
   grub_luks2_digest_t digest;
@@ -545,7 +576,7 @@ luks2_recover_key (grub_disk_t disk,
   grub_json_t *json = NULL, keyslots;
   grub_err_t ret;
 
-  ret = luks2_read_header (disk, &header);
+  ret = luks2_read_header (disk, hdr_file, &header);
   if (ret)
     return ret;
 
@@ -554,8 +585,19 @@ luks2_recover_key (grub_disk_t disk,
       return GRUB_ERR_OUT_OF_MEMORY;
 
   /* Read the JSON area. */
-  ret = grub_disk_read (disk, 0, grub_be_to_cpu64 (header.hdr_offset) + sizeof (header),
-			grub_be_to_cpu64 (header.hdr_size) - sizeof (header), json_header);
+  json_header_offset = grub_be_to_cpu64 (header.hdr_offset) + sizeof (header);
+  json_header_size = grub_be_to_cpu64 (header.hdr_size) - sizeof (header);
+
+  if (hdr_file)
+    {
+      grub_file_seek (hdr_file, json_header_offset);
+      if (grub_file_read (hdr_file, json_header, json_header_size) != json_header_size)
+	  ret = GRUB_ERR_READ_ERROR;
+      else
+	  ret = GRUB_ERR_NONE;
+    }
+  else
+      ret = grub_disk_read (disk, 0, json_header_offset, json_header_size, json_header);
   if (ret)
       goto err;
 
@@ -570,16 +612,47 @@ luks2_recover_key (grub_disk_t disk,
       goto err;
     }
 
-  /* Get the passphrase from the user. */
-  if (disk->partition)
-    part = grub_partition_get_name (disk->partition);
-  grub_printf_ (N_("Enter passphrase for %s%s%s (%s): "), disk->name,
-		disk->partition ? "," : "", part ? : "",
-		crypt->uuid);
-  if (!grub_password_get (passphrase, MAX_PASSPHRASE))
+  if (mkey_file)
     {
-      ret = grub_error (GRUB_ERR_BAD_ARGUMENT, "Passphrase not supplied");
-      goto err;
+      /* Get the master key from file. */
+      candidate_key_len = grub_file_read (mkey_file, candidate_key, GRUB_CRYPTODISK_MAX_KEYLEN);
+      if (candidate_key_len == (grub_size_t)-1)
+	{
+	  ret = grub_error (GRUB_ERR_FILE_READ_ERROR, "Error reading key file");
+	  goto err;
+	}
+      if (candidate_key_len == 0)
+	{
+	  ret = grub_error (GRUB_ERR_BAD_ARGUMENT, "Key not supplied");
+	  goto err;
+	}
+    }
+  else if (key_file)
+    {
+      /* Get the passphrase from file. */
+      passphrase = grub_malloc (GRUB_CRYPTODISK_MAX_PASSPHRASE);
+      passphrase_len = grub_file_read (key_file, passphrase, GRUB_CRYPTODISK_MAX_PASSPHRASE);
+      if (passphrase_len == (grub_size_t)-1)
+	{
+	  ret = grub_error (GRUB_ERR_FILE_READ_ERROR, "Error reading passphrase file");
+	  goto err;
+	}
+    }
+  else
+    {
+      /* Get the passphrase from the user. */
+      if (disk->partition)
+	part = grub_partition_get_name (disk->partition);
+      grub_printf_ (N_("Enter passphrase for %s%s%s (%s): "), disk->name,
+		    disk->partition ? "," : "", part ? : "",
+		    crypt->uuid);
+      passphrase = grub_malloc (MAX_PASSPHRASE);
+      if (!grub_password_get (passphrase, MAX_PASSPHRASE))
+	{
+	  ret = grub_error (GRUB_ERR_BAD_ARGUMENT, "Passphrase not supplied");
+	  goto err;
+	}
+      passphrase_len = grub_strlen (passphrase);
     }
 
   if (grub_json_getvalue (&keyslots, json, "keyslots") ||
@@ -604,6 +677,26 @@ luks2_recover_key (grub_disk_t disk,
 
       grub_dprintf ("luks2", "Trying keyslot %"PRIuGRUB_SIZE"\n", i);
 
+      if (mkey_file)
+	{
+	  if (candidate_key_len != keyslot.key_size)
+	    {
+	      grub_dprintf ("luks2", "Wrong key length for keyslot %"PRIuGRUB_SIZE": %s\n",
+			    i, grub_errmsg);
+	      continue;
+	    }
+
+	  ret = luks2_verify_key (&digest, candidate_key, candidate_key_len);
+	  if (ret)
+	    {
+	      grub_dprintf ("luks2", "Could not open keyslot %"PRIuGRUB_SIZE": %s\n",
+			    i, grub_errmsg);
+	      continue;
+	    }
+	}
+      else
+	  candidate_key_len = keyslot.key_size;
+
       /* Set up disk according to keyslot's segment. */
       crypt->offset = grub_divmod64 (segment.offset, segment.sector_size, NULL);
       crypt->log_sector_size = sizeof (unsigned int) * 8
@@ -613,21 +706,24 @@ luks2_recover_key (grub_disk_t disk,
       else
 	crypt->total_length = grub_strtoull (segment.size, NULL, 10);
 
-      ret = luks2_decrypt_key (candidate_key, disk, crypt, &keyslot,
-			       (const grub_uint8_t *) passphrase, grub_strlen (passphrase));
-      if (ret)
+      if (passphrase)
 	{
-	  grub_dprintf ("luks2", "Decryption with keyslot %"PRIuGRUB_SIZE" failed: %s\n",
-			i, grub_errmsg);
-	  continue;
-	}
+	  ret = luks2_decrypt_key (candidate_key, disk, crypt, hdr_file, &keyslot,
+				   (const grub_uint8_t *) passphrase, passphrase_len);
+	  if (ret)
+	    {
+	      grub_dprintf ("luks2", "Decryption with keyslot %"PRIuGRUB_SIZE" failed: %s\n",
+			    i, grub_errmsg);
+	      continue;
+	    }
 
-      ret = luks2_verify_key (&digest, candidate_key, keyslot.key_size);
-      if (ret)
-	{
-	  grub_dprintf ("luks2", "Could not open keyslot %"PRIuGRUB_SIZE": %s\n",
-			i, grub_errmsg);
-	  continue;
+	  ret = luks2_verify_key (&digest, candidate_key, candidate_key_len);
+	  if (ret)
+	    {
+	      grub_dprintf ("luks2", "Could not open keyslot %"PRIuGRUB_SIZE": %s\n",
+			    i, grub_errmsg);
+	      continue;
+	    }
 	}
 
       /*
@@ -635,13 +731,14 @@ luks2_recover_key (grub_disk_t disk,
        * where each element is either empty or holds a key.
        */
       grub_printf_ (N_("Slot %"PRIuGRUB_SIZE" opened\n"), i);
-
-      candidate_key_len = keyslot.key_size;
       break;
     }
-  if (candidate_key_len == 0)
+  if (i == size)
     {
-      ret = grub_error (GRUB_ERR_ACCESS_DENIED, "Invalid passphrase");
+      if (mkey_file)
+	  ret = grub_error (GRUB_ERR_ACCESS_DENIED, "Invalid key");
+      else
+	  ret = grub_error (GRUB_ERR_ACCESS_DENIED, "Invalid passphrase");
       goto err;
     }
 
@@ -666,6 +763,7 @@ luks2_recover_key (grub_disk_t disk,
 
  err:
   grub_free (part);
+  grub_free (passphrase);
   grub_free (json_header);
   grub_json_free (json);
   return ret;
